@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Analisi Climatica Carpi (2004-2024)</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; background: #f4f6f8; margin: 0; padding: 20px; color: #333; }
+    .container { max-width: 1000px; margin: auto; background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.06); }
+    h1 { margin-top: 0; font-size: 1.6rem; color: #1e293b; }
+    .controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin: 20px 0; padding: 15px; background: #f8fafc; border-radius: 8px; }
+    .card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 25px; }
+    .card { background: #f1f5f9; padding: 15px; border-radius: 8px; text-align: center; }
+    .card .val { font-size: 1.5rem; font-weight: bold; color: #2563eb; margin-top: 5px; }
+    .chart-container { position: relative; height: 380px; margin-top: 20px; }
+    button { background: #2563eb; color: white; border: none; padding: 10px 18px; border-radius: 6px; cursor: pointer; font-size: 0.95rem; }
+    button:hover { background: #1d4ed8; }
+  </style>
+</head>
+<body>
+
+<div class="container">
+  <h1>🌡️ Analisi Climatica Bassa Padana (Carpi, MO)</h1>
+  <p>Dati storici ERA5 (Open-Meteo) a confronto: 2004 – 2024</p>
+
+  <div class="controls">
+    <div>
+      <label><b>Stagione visualizzata:</b></label><br>
+      <select id="seasonSelect" onchange="updateUI()">
+        <option value="Tutto">Tutto l'anno</option>
+        <option value="Estate" selected>Estate (Giu-Lug-Ago)</option>
+        <option value="Inverno">Inverno (Dic-Gen-Feb)</option>
+        <option value="Primavera">Primavera (Mar-Apr-Mag)</option>
+        <option value="Autunno">Autunno (Set-Ott-Nov)</option>
+      </select>
+    </div>
+    <div>
+      <label><b>Anni di Proiezione Futura:</b> <span id="projVal">5</span> anni</label><br>
+      <input type="range" id="projSlider" min="1" max="10" value="5" oninput="document.getElementById('projVal').textContent=this.value; updateUI();">
+    </div>
+    <div style="align-self: flex-end;">
+      <button onclick="caricaDati()">🔄 Ricarica / Aggiorna Dati</button>
+    </div>
+  </div>
+
+  <div class="card-grid">
+    <div class="card">
+      <div>Trend 20 Anni</div>
+      <div class="val" id="statTrend">+0.0 °C</div>
+    </div>
+    <div class="card">
+      <div>Stima a 5 anni</div>
+      <div class="val" id="statProj">-- °C</div>
+    </div>
+    <div class="card">
+      <div>Notti Tropicali medie/anno (Tmin ≥ 20°C)</div>
+      <div class="val" id="statTropical">--</div>
+    </div>
+  </div>
+
+  <div class="chart-container">
+    <canvas id="climateChart"></canvas>
+  </div>
+</div>
+
+<script>
+let rawData = null;
+let chartInstance = null;
+
+// Calcola la regressione lineare semplice: y = m*x + q
+function linearRegression(yArr) {
+  const n = yArr.length;
+  let sumX = 0, sumY = 0, sumXY = 0, sumXX = 0;
+  for (let i = 0; i < n; i++) {
+    sumX += i;
+    sumY += yArr[i];
+    sumXY += i * yArr[i];
+    sumXX += i * i;
+  }
+  const m = (n * sumXY - sumX * sumY) / (n * sumXX - sumX * sumX);
+  const q = (sumY - m * sumX) / n;
+  return { m, q };
+}
+
+async function caricaDati() {
+  const btn = document.querySelector('button');
+  btn.textContent = "Caricamento in corso...";
+  btn.disabled = true;
+
+  try {
+    // Coordinate Carpi (MO)
+    const url = "https://archive-api.open-meteo.com/v1/archive?latitude=44.7836&longitude=10.8856&start_date=2004-01-01&end_date=2024-12-31&daily=temperature_2m_mean,temperature_2m_min&timezone=Europe%2FBerlin";
+    const res = await fetch(url);
+    rawData = await res.json();
+    btn.textContent = "Dati Caricati ✔";
+    updateUI();
+  } catch (err) {
+    alert("Errore nel caricamento dei dati meteo: " + err);
+    btn.textContent = "Riprova";
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function elaboraDati(stagione, anniProiezione) {
+  if (!rawData || !rawData.daily) return null;
+
+  const dates = rawData.daily.time;
+  const tMeans = rawData.daily.temperature_2m_mean;
+  const tMins = rawData.daily.temperature_2m_min;
+
+  // Raggruppa per anno
+  const anni = {};
+  const nottiTropicali = {};
+
+  for (let i = 0; i < dates.length; i++) {
+    const d = new Date(dates[i]);
+    const anno = d.getFullYear();
+    const mese = d.getMonth() + 1; // 1-12
+
+    let matchStagione = false;
+    if (stagione === "Tutto") matchStagione = true;
+    else if (stagione === "Inverno" && [12, 1, 2].includes(mese)) matchStagione = true;
+    else if (stagione === "Primavera" && [3, 4, 5].includes(mese)) matchStagione = true;
+    else if (stagione === "Estate" && [6, 7, 8].includes(mese)) matchStagione = true;
+    else if (stagione === "Autunno" && [9, 10, 11].includes(mese)) matchStagione = true;
+
+    if (matchStagione) {
+      if (!anni[anno]) anni[anno] = [];
+      anni[anno].push(tMeans[i]);
+    }
+
+    // Calcolo notti tropicali (Tmin >= 20°C in estate)
+    if (!nottiTropicali[anno]) nottiTropicali[anno] = 0;
+    if (tMins[i] >= 20.0) nottiTropicali[anno]++;
+  }
+
+  const listAnni = Object.keys(anni).map(Number).sort();
+  const medie = listAnni.map(a => {
+    const vals = anni[a];
+    return vals.reduce((acc, v) => acc + v, 0) / vals.length;
+  });
+
+  // Trend e regressione
+  const { m, q } = linearRegression(medie);
+  const trendLine = listAnni.map((_, i) => q + m * i);
+
+  // Proiezioni
+  const labels = [...listAnni];
+  const serieReale = [...medie];
+  const serieTrend = [...trendLine];
+  const serieProiezione = new Array(listAnni.length).fill(null);
+  serieProiezione[serieProiezione.length - 1] = trendLine[trendLine.length - 1];
+
+  const ultimoAnno = listAnni[listAnni.length - 1];
+  for (let p = 1; p <= anniProiezione; p++) {
+    labels.push(ultimoAnno + p);
+    serieReale.push(null);
+    serieTrend.push(null);
+    serieProiezione.push(q + m * (listAnni.length - 1 + p));
+  }
+
+  const deltaTotale = m * 20; // Variazione in 20 anni
+  const mediaNottiTrop = Object.values(nottiTropicali).reduce((a, b) => a + b, 0) / listAnni.length;
+  const stimaFutura = serieProiezione[serieProiezione.length - 1];
+
+  return { labels, serieReale, serieTrend, serieProiezione, deltaTotale, stimaFutura, mediaNottiTrop };
+}
+
+function updateUI() {
+  if (!rawData) return;
+  const stagione = document.getElementById("seasonSelect").value;
+  const anniProiez = parseInt(document.getElementById("projSlider").value, 10);
+
+  const res = elaboraDati(stagione, anniProiez);
+  if (!res) return;
+
+  // Aggiorna KPI cards
+  const segno = res.deltaTotale > 0 ? "+" : "";
+  document.getElementById("statTrend").textContent = `${segno}${res.deltaTotale.toFixed(2)} °C`;
+  document.getElementById("statTrend").style.color = res.deltaTotale > 0 ? "#dc2626" : "#2563eb";
+  document.getElementById("statProj").textContent = `${res.stimaFutura.toFixed(2)} °C`;
+  document.getElementById("statTropical").textContent = `${Math.round(res.mediaNottiTrop)} / anno`;
+
+  // Aggiorna Grafico
+  if (chartInstance) chartInstance.destroy();
+  const ctx = document.getElementById('climateChart').getContext('2d');
+  chartInstance = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: res.labels,
+      datasets: [
+        { label: 'Media Storica Misurata (°C)', data: res.serieReale, borderColor: '#2563eb', backgroundColor: '#2563eb', tension: 0.1 },
+        { label: 'Trend Lineare', data: res.serieTrend, borderColor: '#f97316', borderDash: [4, 4], pointRadius: 0 },
+        { label: `Previsione (+${anniProiez} anni)`, data: res.serieProiezione, borderColor: '#ef4444', borderDash: [6, 6], pointRadius: 3 }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: { y: { title: { display: true, text: 'Temperatura (°C)' } } }
+    }
+  });
+}
+
+// Avvio automatico al caricamento della pagina
+window.onload = caricaDati;
+</script>
+</body>
+</html>
